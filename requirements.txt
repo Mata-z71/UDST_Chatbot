@@ -3,5 +3,5 @@ pandas
 scikit-learn
 sentence-transformers
 torch
-mistral
+mistralai
 python-dotenv

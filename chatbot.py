@@ -1,5 +1,3 @@
-import re
-import dotenv
 import faiss
 import pandas as pd
 import numpy as np
@@ -10,66 +8,113 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from mistralai import Mistral
 
-import os
-
-
-
 
 class Chatbot:
 
-    def __init__(self, csv_file,mistral_api_key):
+    def __init__(self, faq_csv, website_csv, mistral_api_key):
 
-        # load data
-        self.data = pd.read_csv(csv_file)
-        self.data.columns = self.data.columns.str.strip().str.lower()
+        # -----------------------------
+        # Load FAQ dataset
+        # -----------------------------
+        faq = pd.read_csv(faq_csv)
+        faq.columns = faq.columns.str.strip().str.lower()
 
-        self.questions = self.data["question"].astype(str).tolist()
-        self.answers = self.data["answer"].astype(str).tolist()
-        self.categories = self.data["category"].astype(str).tolist()
+        faq_docs = [
+            f"Source: FAQ\nQuestion: {row['question']}\nAnswer: {row['answer']}"
+            for _, row in faq.iterrows()
+        ]
 
-        # embedding model
+        faq_questions = faq["question"].tolist()
+
+        # -----------------------------
+        # Load website dataset
+        # -----------------------------
+        site = pd.read_csv(website_csv)
+
+        site_docs = [
+            f"Source: Website\nContent: {row['text']}"
+            for _, row in site.iterrows()
+        ]
+
+        site_questions = site["text"].tolist()
+
+        # -----------------------------
+        # Merge knowledge base
+        # -----------------------------
+        self.documents = faq_docs + site_docs
+        self.questions = faq_questions + site_questions
+
+        # -----------------------------
+        # Embedding model
+        # -----------------------------
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
-        # encode questions
-        self.question_embeddings = self.model.encode(
-            self.questions,
+        self.doc_embeddings = self.model.encode(
+            self.documents,
             convert_to_numpy=True
         ).astype("float32")
 
-        # -------- FAISS index --------
-        dimension = self.question_embeddings.shape[1]
+        # -----------------------------
+        # FAISS index
+        # -----------------------------
+        dimension = self.doc_embeddings.shape[1]
 
         self.index = faiss.IndexFlatIP(dimension)
 
-        # normalize vectors
-        faiss.normalize_L2(self.question_embeddings)
+        faiss.normalize_L2(self.doc_embeddings)
 
-        self.index.add(self.question_embeddings)
+        self.index.add(self.doc_embeddings)
 
-        # -------- TFIDF --------
+        # -----------------------------
+        # TF-IDF keyword retrieval
+        # -----------------------------
         self.vectorizer = TfidfVectorizer()
-        self.tfidf_matrix = self.vectorizer.fit_transform(self.questions)
+        self.tfidf_matrix = self.vectorizer.fit_transform(self.documents)
 
-        # -------- mistral --------
+        # -----------------------------
+        # LLM client
+        # -----------------------------
         self.client = Mistral(api_key=mistral_api_key)
 
         # conversation memory
         self.history = []
 
-        # thresholds
-        self.escalation_threshold = 0.35
-
     # -----------------------------
-    # FAISS semantic search
+    # Router using LLM
     # -----------------------------
 
-    def faiss_search(self, user_question, top_k=3):
+    def route_query(self, question):
 
-        query_embedding = self.model.encode([user_question]).astype("float32")
+        router_prompt = f"""
+Classify the message into ONE category:
+
+1. greeting
+2. udst_question
+3. unrelated
+
+Message: "{question}"
+
+Return ONLY the category.
+"""
+
+        response = self.client.chat.complete(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": router_prompt}],
+        )
+
+        return response.choices[0].message.content.strip().lower()
+
+    # -----------------------------
+    # FAISS search
+    # -----------------------------
+
+    def faiss_search(self, query):
+
+        query_embedding = self.model.encode([query]).astype("float32")
 
         faiss.normalize_L2(query_embedding)
 
-        scores, indices = self.index.search(query_embedding, top_k)
+        scores, indices = self.index.search(query_embedding, len(self.documents))
 
         return scores[0], indices[0]
 
@@ -77,18 +122,13 @@ class Chatbot:
     # Hybrid retrieval
     # -----------------------------
 
-    def hybrid_search(self, user_question, top_k=3):
+    def hybrid_search(self, query, top_k=4):
 
-        # semantic search
-        semantic_scores, indices = self.faiss_search(user_question, top_k=len(self.questions))
+        semantic_scores, indices = self.faiss_search(query)
 
-        semantic_scores = semantic_scores
-
-        # keyword search
-        query_vec = self.vectorizer.transform([user_question])
+        query_vec = self.vectorizer.transform([query])
         keyword_scores = cosine_similarity(query_vec, self.tfidf_matrix)[0]
 
-        # combine
         hybrid_scores = 0.6 * semantic_scores + 0.4 * keyword_scores
 
         top_indices = np.argsort(hybrid_scores)[-top_k:][::-1]
@@ -97,32 +137,38 @@ class Chatbot:
 
         for idx in top_indices:
             results.append({
-                "question": self.questions[idx],
-                "answer": self.answers[idx],
-                "category": self.categories[idx],
+                "doc": self.documents[idx],
                 "score": float(hybrid_scores[idx])
             })
 
         return results
 
     # -----------------------------
-    # Generate answer with Mistral
+    # Generate LLM answer
     # -----------------------------
 
     def generate_answer(self, question, contexts):
 
-        context_text = "\n".join(contexts)
+        context_text = "\n\n".join(contexts)
 
         history_text = "\n".join(
-            [f"User: {h['user']}\nBot: {h['bot']}" for h in self.history]
+            [f"User: {h['user']}\nAssistant: {h['bot']}" for h in self.history]
         )
 
+        system_prompt = """
+You are a helpful student support assistant for the University of Doha for Science and Technology (UDST).
+
+Your job is to help students by answering questions clearly and naturally.
+
+Rules:
+- Use the provided context as your main knowledge source.
+- If the context does not contain the answer, say you are unsure.
+- Do NOT invent policies or information.
+- Respond in a friendly conversational way.
+"""
+
         prompt = f"""
-You are a student support assistant for UDST (University of Doha for Science and Technology).
-
-Use ONLY the information in the context below to answer the question.
-
-Conversation history:
+Conversation History:
 {history_text}
 
 Context:
@@ -131,88 +177,70 @@ Context:
 Student Question:
 {question}
 
-Answer clearly and concisely.
+Answer:
 """
 
         response = self.client.chat.complete(
             model="mistral-small-latest",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
         )
 
         return response.choices[0].message.content
 
     # -----------------------------
-    # Feedback logging
+    # Main response function
     # -----------------------------
 
-    def save_feedback(self, question, answer, feedback):
+    def get_response(self, question):
 
-        df = pd.DataFrame([{
-            "question": question,
-            "answer": answer,
-            "feedback": feedback
-        }])
-
-        df.to_csv("feedback_log.csv", mode="a", header=False, index=False)
-
-    # -----------------------------
-    # Escalation message
-    # -----------------------------
-
-    def escalate(self):
-
-        return (
-            "I'm not confident about this answer.\n\n"
-            "Please contact UDST student services for assistance.\n"
-            "Website: https://www.udst.edu.qa\n"
-            "Or contact the registrar office."
-        )
-
-    # -----------------------------
-    # Main chatbot response
-    # -----------------------------
-
-    def get_response(self, user_question):
-
-        q = user_question.lower().strip()
+        q = question.strip()
 
         if not q:
-            return "Please enter a question.", [], 0.0
+            return "Please enter a question.", [], 0
 
-        # greetings
-        greetings = ["hello", "hi", "hey", "thanks", "thank you"]
+        # -----------------------------
+        # Route query
+        # -----------------------------
+        route = self.route_query(q)
 
-        if any(g in q for g in greetings):
-            return "Hello! How can I help you with UDST information today?", [], 1.0
+        # Greeting
+        if route == "greeting":
 
-        # block unrelated
-        blocked = ["weather", "restaurant", "news", "football", "pasta"]
+            answer = self.generate_answer(
+                q,
+                ["The user greeted the assistant."]
+            )
 
-        if any(word in q for word in blocked):
-            return "Sorry, I can only answer questions related to UDST.", [], 0.0
+            return answer, [], 1
 
-        # retrieval
-        results = self.hybrid_search(user_question)
+        # Unrelated
+        if route == "unrelated":
 
-        contexts = [r["answer"] for r in results]
+            return (
+                "I'm designed to help with questions related to UDST. "
+                "Please ask something about the university.",
+                [],
+                0
+            )
 
-        confidence = results[0]["score"]
+        # -----------------------------
+        # UDST question → RAG
+        # -----------------------------
+        results = self.hybrid_search(q)
 
-        if confidence < self.escalation_threshold:
-            return self.escalate(), [], confidence
+        contexts = [r["doc"] for r in results]
 
-        # generate answer
-        answer = self.generate_answer(user_question, contexts)
+        answer = self.generate_answer(q, contexts)
 
-        # update memory
         self.history.append({
-            "user": user_question,
+            "user": q,
             "bot": answer
         })
 
         if len(self.history) > 3:
             self.history.pop(0)
 
-        sources = [r["question"] for r in results]
-
-        return answer, sources, confidence
+        return answer, contexts[:2], results[0]["score"]

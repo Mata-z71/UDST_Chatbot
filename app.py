@@ -47,7 +47,7 @@ st.set_page_config(
 # -----------------------------
 @st.cache_resource
 def load_bot():
-    return Chatbot("udst_faq.csv",os.getenv("MISTRAL_API_KEY"))
+    return Chatbot("udst_faq.csv","website_data.csv",os.getenv("MISTRAL_API_KEY"))
 
 
 # -----------------------------
@@ -85,15 +85,18 @@ def format_answer(answer: str) -> str:
     return formatted
 
 
-def confidence_label(score: float | None) -> str:
-    if score is None:
-        return "Direct match"
-    if score >= 0.85:
-        return "High confidence"
-    if score >= 0.65:
-        return "Medium confidence"
-    return "Low confidence"
+def confidence_label(score):
 
+    if score is None:
+        return "Direct response"
+
+    if score > 0.75:
+        return "High confidence"
+
+    if score > 0.45:
+        return "Medium confidence"
+
+    return "Low confidence"
 
 def default_messages() -> list[dict]:
     return [
@@ -153,7 +156,7 @@ def process_pending_question():
     add_message(
         "assistant",
         format_answer(answer),
-        category=category,
+        category="RAG",
         score=score,
     )
     st.session_state.pending_question = None
