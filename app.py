@@ -1,3 +1,4 @@
+import os
 import time
 import base64
 from pathlib import Path
@@ -7,6 +8,8 @@ import streamlit.components.v1 as components
 
 from chatbot import Chatbot
 
+from dotenv import load_dotenv
+load_dotenv()
 
 # -----------------------------
 # Configuration
@@ -44,7 +47,7 @@ st.set_page_config(
 # -----------------------------
 @st.cache_resource
 def load_bot():
-    return Chatbot("udst_faq.csv")
+    return Chatbot("udst_faq.csv",os.getenv("MISTRAL_API_KEY"))
 
 
 # -----------------------------
