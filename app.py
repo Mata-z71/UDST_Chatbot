@@ -151,12 +151,18 @@ def process_pending_question():
     if not pending_question:
         return
 
+    if 'bot' not in st.session_state:
+        with st.spinner("Initializing chatbot... This may take a moment."):
+            st.session_state.bot = load_bot()
+
+    bot = st.session_state.bot
+
     time.sleep(0.45)
     answer, category, score = bot.get_response(pending_question)
     add_message(
         "assistant",
         format_answer(answer),
-        category="RAG",
+        category=category,
         score=score,
     )
     st.session_state.pending_question = None
@@ -612,6 +618,14 @@ def render_sidebar():
             unsafe_allow_html=True,
         )
 
+        if len(st.session_state.messages) > 1:
+            st.markdown("## Suggested questions")
+            st.markdown("Use these to continue with question ideas without scrolling to the main chat area.")
+            for index, question in enumerate(SUGGESTED_QUESTIONS):
+                if st.button(question, key=f"sidebar_suggested_{index}", use_container_width=True):
+                    queue_question(question)
+                    st.rerun()
+
 
 def render_hero():
     logo_html = ""
@@ -676,9 +690,9 @@ def render_message(message: dict):
         metadata = []
         if message.get("time"):
             metadata.append(f'<span class="metadata-pill">Time {message["time"]}</span>')
-        if message["role"] == "assistant" and message.get("category"):
-            metadata.append(f'<span class="metadata-pill">Category {message["category"]}</span>')
         if message["role"] == "assistant":
+            category_label = "RAG" if message.get("category") == "RAG" else "General"
+            metadata.append(f'<span class="metadata-pill">{category_label}</span>')
             metadata.append(
                 f'<span class="metadata-pill">{confidence_label(message.get("score"))}</span>'
             )
@@ -709,7 +723,7 @@ def render_footer():
     st.markdown(
         """
         <div class="footer-card">
-            AI-powered university assistant built with Streamlit and semantic search using Sentence Transformers.
+            UDST Student Support Chatbot — powered by your local FAQ + website knowledge graph.
         </div>
         """,
         unsafe_allow_html=True,
@@ -719,7 +733,6 @@ def render_footer():
 # -----------------------------
 # Layout and chat logic
 # -----------------------------
-bot = load_bot()
 LOGO_PATH = resolve_logo_path()
 LOGO_DATA_URI = logo_data_uri(LOGO_PATH)
 
@@ -751,14 +764,6 @@ user_prompt = st.chat_input(CHAT_PLACEHOLDER)
 if user_prompt:
     queue_question(user_prompt)
     st.rerun()
-
-if len(st.session_state.messages) > 1:
-    render_prompt_grid(
-        "Suggested questions",
-        "More ideas you can ask next without losing your current conversation.",
-        SUGGESTED_QUESTIONS,
-        "suggested_prompt",
-    )
 
 render_footer()
 render_auto_scroll_script()
