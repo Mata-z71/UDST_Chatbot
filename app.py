@@ -691,7 +691,7 @@ def render_message(message: dict):
         if message.get("time"):
             metadata.append(f'<span class="metadata-pill">Time {message["time"]}</span>')
         if message["role"] == "assistant":
-            category_label = "RAG" if message.get("category") == "RAG" else "General"
+            category_label = message.get("category") or "General"
             metadata.append(f'<span class="metadata-pill">{category_label}</span>')
             metadata.append(
                 f'<span class="metadata-pill">{confidence_label(message.get("score"))}</span>'

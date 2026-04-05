@@ -7,7 +7,7 @@ import time
 
 
 BASE_URL = "https://www.udst.edu.qa"
-MAX_PAGES = 50  # limit to avoid scraping too many pages
+MAX_PAGES = 100  # limit to avoid scraping too many pages
 CHUNK_SIZE = 500
 
 
@@ -24,13 +24,19 @@ def clean_text(text):
     return text
 
 
-def chunk_text(text, chunk_size=CHUNK_SIZE):
+def chunk_text(text, chunk_size=CHUNK_SIZE, overlap=50):
     words = text.split()
     chunks = []
+    if chunk_size <= overlap:
+        raise ValueError("chunk_size must be greater than overlap")
 
-    for i in range(0, len(words), chunk_size):
+    i = 0
+    while i < len(words):
         chunk = " ".join(words[i:i + chunk_size])
         chunks.append(chunk)
+        if i + chunk_size >= len(words):
+            break
+        i += chunk_size - overlap
 
     return chunks
 
@@ -119,17 +125,17 @@ def crawl():
         time.sleep(1)
 
 
-def save_dataset():
+def save_dataset(output_csv="website_data.csv"):
 
     df = pd.DataFrame(documents)
 
-    df.to_csv("udst_website_content.csv", index=False)
+    df.to_csv(output_csv, index=False)
 
-    print("Saved dataset with", len(df), "chunks")
+    print("Saved dataset with", len(df), "chunks to", output_csv)
 
 
 if __name__ == "__main__":
 
     crawl()
 
-    save_dataset()
+    save_dataset(output_csv="website_data.csv")

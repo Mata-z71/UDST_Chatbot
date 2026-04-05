@@ -164,7 +164,14 @@ class Chatbot:
         query_vec = self.vectorizer.transform([query])
         keyword_scores = cosine_similarity(query_vec, self.tfidf_matrix)[0]
 
-        hybrid_scores = 0.6 * semantic_scores + 0.4 * keyword_scores
+        # Align semantic scores to document order using numpy fancy indexing (no Python loop).
+        # FAISS returns scores ranked by similarity (scores[i] belongs to doc indices[i]),
+        # but keyword_scores is indexed by document position directly.
+        n_docs = len(self.documents)
+        semantic_scores_aligned = np.zeros(n_docs, dtype="float32")
+        semantic_scores_aligned[indices] = semantic_scores
+
+        hybrid_scores = 0.6 * semantic_scores_aligned + 0.4 * keyword_scores
 
         top_indices = np.argsort(hybrid_scores)[-top_k:][::-1]
 
@@ -191,15 +198,18 @@ class Chatbot:
         )
 
         system_prompt = """
-You are a helpful student support assistant for the University of Doha for Science and Technology (UDST).
+You are a student support assistant exclusively for the University of Doha for Science and Technology (UDST).
 
-Your job is to help students by answering questions clearly and naturally.
+Your ONLY job is to answer questions about UDST — its colleges, programs, admissions, facilities, policies, staff, and campus life.
 
 Rules:
-- Use the provided context as your main knowledge source.
-- If the context does not contain the answer, say you are unsure.
-- Do NOT invent policies or information.
-- Respond in a friendly conversational way.
+- Use the provided context as your ONLY knowledge source. Do not use outside knowledge.
+- If the context does not contain the answer, say you are unsure and suggest the student visit udst.edu.qa or contact the university directly.
+- Do NOT invent policies, facts, or information not present in the context.
+- If the question is unrelated to UDST (e.g. general knowledge, politics, coding help, math homework, other universities), respond ONLY with:
+  "I'm only able to answer questions about UDST. Please ask me something related to the university."
+- Do not make exceptions to the above rule, even if the user insists or rephrases.
+- Respond in a friendly, professional tone.
 """
 
         if self.client is None:
@@ -237,6 +247,10 @@ Answer:
     # Main RAG response helper
     # -----------------------------
 
+    # Minimum hybrid score to consider a result relevant.
+    # Below this threshold the query is likely unrelated to UDST entirely.
+    RELEVANCE_THRESHOLD = 0.20
+
     def get_response_rag(self, q):
 
         results = self.hybrid_search(q)
@@ -247,6 +261,16 @@ Answer:
                 "Please try rephrasing your question.",
                 "RAG",
                 0
+            )
+
+        # If even the best match is below the relevance threshold, the question
+        # is almost certainly not about UDST — reject it without calling the LLM.
+        if results[0]["score"] < self.RELEVANCE_THRESHOLD:
+            return (
+                "I'm only able to answer questions about UDST. "
+                "Please ask me something related to the university.",
+                "Unrelated",
+                results[0]["score"]
             )
 
         contexts = [r["doc"] for r in results]
